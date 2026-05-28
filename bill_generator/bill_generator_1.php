@@ -1,4 +1,55 @@
 <?php
+/* ============================================================
+   DATABASE CONFIGURATION — change these four values only
+   ============================================================ */
+define('DB_HOST', 'localhost');
+define('DB_USER', 'root');        // your MySQL username
+define('DB_PASS', '');            // your MySQL password
+define('DB_NAME', 'bill_db');     // your database name
+/* ============================================================ */
+
+/* ---------- Connect to MySQL ---------- */
+$db = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
+
+if ($db->connect_error) {
+    // Show a friendly message and stop if the DB is unreachable
+    die('<div style="font-family:sans-serif;background:#1a1a2e;color:#f87171;padding:32px;text-align:center;min-height:100vh">
+            <h2>⚠️ Database Connection Failed</h2>
+            <p style="color:#94a3b8;margin-top:12px">' . htmlspecialchars($db->connect_error) . '</p>
+            <p style="color:#64748b;margin-top:8px">Please check your DB credentials in the config section at the top of this file.</p>
+         </div>');
+}
+
+$db->set_charset('utf8mb4');
+
+/* ---------- Auto-create tables if they don't exist ---------- */
+$db->multi_query("
+    CREATE TABLE IF NOT EXISTS bills (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        bill_no     VARCHAR(20)    NOT NULL,
+        cust_name   VARCHAR(150)   NOT NULL,
+        mobile      VARCHAR(20)    NOT NULL,
+        grand_total DECIMAL(12,2)  NOT NULL,
+        bill_date   DATE           NOT NULL,
+        created_at  TIMESTAMP      DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+    CREATE TABLE IF NOT EXISTS bill_items (
+        id          INT AUTO_INCREMENT PRIMARY KEY,
+        bill_id     INT            NOT NULL,
+        item_name   VARCHAR(200)   NOT NULL,
+        qty         DECIMAL(10,2)  NOT NULL,
+        price       DECIMAL(12,2)  NOT NULL,
+        subtotal    DECIMAL(12,2)  NOT NULL,
+        FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+");
+// Flush multi_query results so subsequent queries work fine
+while ($db->more_results()) { $db->next_result(); }
+
+/* ============================================================
+   Everything below is the original code — untouched
+   ============================================================ */
 $bill_data = null;
 $errors = [];
 
@@ -29,14 +80,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (empty($errors)) {
         $grand_total = array_sum(array_column($processed_items, 'subtotal'));
+        $bill_no   = 'INV-' . strtoupper(substr(md5(time()), 0, 6));
+        $bill_date = date('Y-m-d');
+
         $bill_data = [
             'name'    => $name,
             'mobile'  => $mobile,
             'items'   => $processed_items,
             'total'   => $grand_total,
-            'bill_no' => 'INV-' . strtoupper(substr(md5(time()), 0, 6)),
+            'bill_no' => $bill_no,
             'date'    => date('d M Y'),
         ];
+
+        /* ---------- Save to database ---------- */
+        $stmt = $db->prepare(
+            "INSERT INTO bills (bill_no, cust_name, mobile, grand_total, bill_date)
+             VALUES (?, ?, ?, ?, ?)"
+        );
+        $stmt->bind_param('sssds', $bill_no, $name, $mobile, $grand_total, $bill_date);
+        $stmt->execute();
+        $bill_id = $stmt->insert_id;
+        $stmt->close();
+
+        $stmt_item = $db->prepare(
+            "INSERT INTO bill_items (bill_id, item_name, qty, price, subtotal)
+             VALUES (?, ?, ?, ?, ?)"
+        );
+        foreach ($processed_items as $it) {
+            $stmt_item->bind_param('isddd',
+                $bill_id,
+                $it['name'],
+                $it['qty'],
+                $it['price'],
+                $it['subtotal']
+            );
+            $stmt_item->execute();
+        }
+        $stmt_item->close();
+        /* -------------------------------------- */
     }
 }
 ?>
